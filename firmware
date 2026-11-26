@@ -1,0 +1,68 @@
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <DHT.h>
+
+const char* ssid = "YOUR_WIFI_SSID";
+const char* password = "YOUR_WIFI_PASSWORD";
+const char* serverUrl = "http://192.168.1.100:5000/api/hvac-data";
+
+#define DHTPIN 4
+#define DHTTYPE DHT22
+#define PIR_PIN 13
+#define CURRENT_PIN 34
+#define RELAY_PIN 26
+
+DHT dht(DHTPIN, DHTTYPE);
+float targetSetPoint = 24.0;
+
+void setup() {
+  Serial.begin(115200);
+  dht.begin();
+  pinMode(PIR_PIN, INPUT);
+  pinMode(RELAY_PIN, OUTPUT);
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\n[INFO] ESP32 HVAC Controller Connected to WiFi!");
+}
+
+void loop() {
+  float temp = dht.readTemperature();
+  float hum = dht.readHumidity();
+  int occupied = digitalRead(PIR_PIN);
+  int rawCurrent = analogRead(CURRENT_PIN);
+
+  if (isnan(temp) || isnan(hum)) {
+    Serial.println("[ERROR] Failed to read DHT22 sensor!");
+    delay(2000);
+    return;
+  }
+
+  float powerWatts = map(rawCurrent, 0, 4095, 150, 2200);
+  targetSetPoint = (occupied == HIGH) ? 24.0 : 28.0;
+  bool hvacState = (temp > targetSetPoint);
+  digitalWrite(RELAY_PIN, hvacState ? HIGH : LOW);
+
+  Serial.printf("Temp: %.1fC | Hum: %.1f%% | Occ: %d | SetPt: %.1fC | Power: %.0fW | Relay: %s\n",
+                temp, hum, occupied, targetSetPoint, powerWatts, hvacState ? "ON" : "OFF");
+
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    http.begin(serverUrl);
+    http.addHeader("Content-Type", "application/json");
+
+    String payload = "{\"temp\":" + String(temp) +
+                     ",\"hum\":" + String(hum) +
+                     ",\"occupied\":" + String(occupied) +
+                     ",\"setpoint\":" + String(targetSetPoint) +
+                     ",\"power\":" + String(powerWatts) +
+                     ",\"state\":" + String(hvacState ? 1 : 0) + "}";
+
+    int httpCode = http.POST(payload);
+    Serial.println("[HTTP] POST Status Code: " + String(httpCode));
+    http.end();
+  }
+  delay(10000);
+}
